@@ -4,10 +4,8 @@
     "file_name": "demo-presentation.pptx"
   },
   "context": {
-    "context": {
-      "title": "Quarterly Review",
-      "presenter": "Jane Doe"
-    }
+    "title": "Quarterly Review",
+    "presenter": "Jane Doe"
   },
   "slides": [
     {
