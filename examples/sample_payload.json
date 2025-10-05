@@ -1,0 +1,52 @@
+{
+  "template": "default",
+  "output": {
+    "file_name": "demo-presentation.pptx"
+  },
+  "context": {
+    "title": "Quarterly Review",
+    "presenter": "Jane Doe"
+  },
+  "slides": [
+    {
+      "index": 0,
+      "replacements": {
+        "context": {
+          "title": "Quarterly Review - Q1",
+          "presenter": "Jane Doe"
+        }
+      }
+    },
+    {
+      "index": 1,
+      "replacements": {
+        "section": {
+          "title": "Revenue Summary",
+          "message": "Revenue increased by 15% year-over-year."
+        }
+      },
+      "tables": [
+        {
+          "shape": "DataTable",
+          "header": [
+            "Quarter",
+            "Revenue",
+            "YoY"
+          ],
+          "data": [
+            [
+              "Q1",
+              "$1.2M",
+              "15%"
+            ],
+            [
+              "Q2",
+              "$1.4M",
+              "18%"
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}
