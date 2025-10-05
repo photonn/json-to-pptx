@@ -1,0 +1,14 @@
+{
+    "template": "default",
+    "output": {
+        "file_name": "test-presentation.pptx"
+    },
+    "slides": [
+        {
+            "index": 0,
+            "replacements": {
+                "text1": "This is a sample text for replacement."
+            }
+        }
+    ]
+}

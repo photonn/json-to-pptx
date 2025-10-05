@@ -88,6 +88,19 @@ curl -X POST http://localhost:8000/openai/deployments/json-to-pptx/chat/completi
 The response contains a single choice with the generated PowerPoint attached as
 base64 data under `choices[0].attachments[0].data`.
 
+```bash
+curl -X POST "http://localhost:8000/openai/deployments/json-to-pptx/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {
+        "role": "user",
+        "content": "{\"template\": \"default\", \"output\": {\"file_name\": \"test-presentation.pptx\"}, \"slides\": [{\"index\": 0, \"replacements\": {\"text1\": \"This is a sample text for replacement.\"}}]}"
+      }
+    ]
+  }'
+```
+
 ### Using Docker
 
 ```bash
