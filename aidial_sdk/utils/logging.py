@@ -30,4 +30,4 @@ def log_error(message: str, *args, **kwargs):
 
 
 def log_exception(message: str, *args, **kwargs):
-    logger.exception(message, *args, **kwargs)
+    logger.exception(f"[{deployment_id.get()}] {message}", *args, **kwargs)
