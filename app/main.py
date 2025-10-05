@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -72,5 +73,13 @@ def _resolve_output_name(payload: Dict[str, Any]) -> str:
     return DEFAULT_OUTPUT_NAME
 
 
-app = DIALApp(add_healthcheck=True)
+# Configuration for DIAL Core integration
+DIAL_URL = os.getenv("DIAL_URL")
+
+# Create DIAL app with optional DIAL Core integration
+app = DIALApp(
+    dial_url=DIAL_URL,
+    propagate_auth_headers=bool(DIAL_URL),  # Only enable if DIAL_URL is set
+    add_healthcheck=True
+)
 app.add_chat_completion("json-to-pptx", PresentationApplication())
