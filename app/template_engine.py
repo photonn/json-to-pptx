@@ -218,8 +218,10 @@ class TemplateEngine:
         required_rows = len(data_rows)
         current_rows = len(table.rows)
 
-        for _ in range(required_rows - current_rows):
-            table.add_row()
+        if required_rows > current_rows:
+            raise ValueError(
+                f"Table '{instruction.shape}' requires at least {required_rows} rows, but only {current_rows} are present in the template."
+            )
 
         if data_rows:
             required_cols = max(len(row) for row in data_rows)
