@@ -13,7 +13,9 @@ from aidial_sdk import DIALApp, HTTPException
 from aidial_sdk.chat_completion import ChatCompletion, Request, Response
 from fastapi import Request as FastAPIRequest
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response as StarletteResponse
+from starlette.responses import Response as StarletteResponse, StreamingResponse
+import asyncio
+from typing import AsyncGenerator
 
 from .template_engine import TemplateEngine, encode_pptx
 
@@ -37,7 +39,48 @@ MIME_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presen
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
-    """Middleware to log all incoming requests with full details."""
+    """Middleware to log all incoming requests and responses with full details."""
+    
+    async def _log_response_body(self, response_body: bytes, is_chat_completion: bool):
+        """Helper to log response body content."""
+        if not is_chat_completion:
+            return
+            
+        body_str = response_body.decode('utf-8', errors='ignore')
+        LOGGER.debug(f"Response body length: {len(body_str)} characters")
+        
+        if len(body_str) < 2000:  # Log smaller responses in full
+            LOGGER.debug(f"Full response body: {body_str}")
+        else:
+            # For larger responses, log the beginning and end
+            LOGGER.debug(f"Response body (first 1000 chars): {body_str[:1000]}")
+            LOGGER.debug(f"Response body (last 500 chars): {body_str[-500:]}")
+            
+        # Try to parse as JSON and log structure
+        try:
+            if body_str.strip():
+                import json
+                parsed = json.loads(body_str)
+                LOGGER.debug(f"Response JSON structure: {self._get_json_structure(parsed)}")
+        except:
+            LOGGER.debug("Response body is not valid JSON")
+    
+    def _get_json_structure(self, obj, max_depth=3, current_depth=0):
+        """Get a summary of JSON structure without logging sensitive data."""
+        if current_depth > max_depth:
+            return "..."
+            
+        if isinstance(obj, dict):
+            return {key: self._get_json_structure(value, max_depth, current_depth + 1) 
+                   for key, value in obj.items()}
+        elif isinstance(obj, list):
+            if len(obj) > 0:
+                return [self._get_json_structure(obj[0], max_depth, current_depth + 1), f"...({len(obj)} items)"]
+            return []
+        elif isinstance(obj, str):
+            return f"string(len={len(obj)})"
+        else:
+            return type(obj).__name__
     
     async def dispatch(self, request: FastAPIRequest, call_next):
         # Log incoming request details
@@ -65,17 +108,41 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         response = None
         try:
             response = await call_next(request)
-            LOGGER.info(f"Response status: {response.status_code}")
             
-            # Log response body for debugging (be careful with large responses)
-            if hasattr(response, 'body') and request.url.path.endswith('/chat/completions'):
+            # Log response details
+            LOGGER.info(f"=== OUTGOING RESPONSE ===")
+            LOGGER.info(f"Response status: {response.status_code}")
+            LOGGER.info(f"Response headers: {dict(response.headers)}")
+            
+            # Enhanced response logging for chat completions
+            is_chat_completion = request.url.path.endswith('/chat/completions')
+            if is_chat_completion:
                 try:
-                    # This is tricky with streaming responses, so we'll just log the status
                     LOGGER.info("Chat completion response generated")
-                except Exception as e:
-                    LOGGER.debug(f"Could not log response body: {e}")
+                    LOGGER.debug(f"Response media type: {response.media_type}")
+                    LOGGER.debug(f"Response charset: {getattr(response, 'charset', 'N/A')}")
                     
-            LOGGER.info(f"=== REQUEST COMPLETED ===")
+                    # Log response size if available
+                    content_length = response.headers.get('content-length')
+                    if content_length:
+                        LOGGER.info(f"Response content length: {content_length} bytes")
+                    
+                    # For StreamingResponse, we need special handling
+                    if isinstance(response, StreamingResponse):
+                        LOGGER.debug("Response is a StreamingResponse - cannot easily log body")
+                    elif hasattr(response, 'body') and response.body:
+                        # Try to read and log the response body
+                        try:
+                            await self._log_response_body(response.body, True)
+                        except Exception as e:
+                            LOGGER.debug(f"Could not log response body: {e}")
+                    else:
+                        LOGGER.debug("Response has no accessible body attribute")
+                        
+                except Exception as e:
+                    LOGGER.debug(f"Could not log detailed response info: {e}")
+                    
+            LOGGER.info(f"=== RESPONSE SENT ===")
             return response
         except Exception as e:
             LOGGER.error(f"Request failed with exception: {e}")
@@ -129,14 +196,19 @@ class PresentationApplication(ChatCompletion):
 
         LOGGER.info("Creating response with attachment...")
         LOGGER.info(f"Attachment details - Title: {output_name}, Data length: {len(pptx_base64)} characters")
+        LOGGER.debug(f"Base64 data sample (first 100 chars): {pptx_base64[:100]}")
         
         # Create response following the exact pattern from DIAL SDK examples
         with response.create_single_choice() as choice:
+            LOGGER.debug("Response choice created successfully")
+            
             choice.append_content(
                 f"Generated presentation '{output_name}' using template instructions."
             )
+            LOGGER.debug("Content appended to choice")
             
             LOGGER.info("Adding PowerPoint attachment to response...")
+            LOGGER.debug(f"Attachment parameters: type='{MIME_TYPE}', title='{output_name}', data_length={len(pptx_base64)}")
             
             # Add the PowerPoint file as an attachment - following render_text example pattern
             choice.add_attachment(
@@ -146,9 +218,11 @@ class PresentationApplication(ChatCompletion):
             )
             
             LOGGER.info("Attachment added successfully")
+            LOGGER.debug("Choice with attachment completed")
             
         LOGGER.info("=== CHAT COMPLETION SUCCESSFUL ===")
         LOGGER.info("Response created successfully with presentation attachment")
+        LOGGER.debug("Response object fully constructed and ready to send")
 
 
 def _resolve_output_name(payload: Dict[str, Any]) -> str:
