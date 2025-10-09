@@ -35,6 +35,10 @@ DEFAULT_OUTPUT_NAME = "presentation.pptx"
 # Use the standard PowerPoint MIME type - DIAL should recognize this for OneDrive integration
 MIME_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
+MIME_TYPE_PRIMARY = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+MIME_TYPE_FALLBACK = "application/vnd.ms-powerpoint"
+MIME_TYPE_GENERIC = "application/octet-stream"
+
 
 class LoggingMiddleware(BaseHTTPMiddleware):
     """Middleware to log all incoming requests with full details."""
@@ -62,9 +66,19 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 LOGGER.error(f"Failed to read request body: {e}")
         
         # Process the request
+        response = None
         try:
             response = await call_next(request)
             LOGGER.info(f"Response status: {response.status_code}")
+            
+            # Log response body for debugging (be careful with large responses)
+            if hasattr(response, 'body') and request.url.path.endswith('/chat/completions'):
+                try:
+                    # This is tricky with streaming responses, so we'll just log the status
+                    LOGGER.info("Chat completion response generated")
+                except Exception as e:
+                    LOGGER.debug(f"Could not log response body: {e}")
+                    
             LOGGER.info(f"=== REQUEST COMPLETED ===")
             return response
         except Exception as e:
@@ -120,22 +134,50 @@ class PresentationApplication(ChatCompletion):
         LOGGER.info("Creating response with attachment...")
         LOGGER.info(f"Attachment details - MIME type: {MIME_TYPE}, Title: {output_name}, Data length: {len(pptx_base64)}")
         
+        # Try different approaches for attachment based on DIAL documentation
         with response.create_single_choice() as choice:
             choice.append_content(
                 f"Generated presentation '{output_name}' using template instructions."
             )
             
             LOGGER.info("Adding attachment to response...")
-            choice.add_attachment(
-                type=MIME_TYPE,
-                title=output_name,
-                data=pptx_base64,
-            )
-            LOGGER.info("Attachment added successfully")
+            
+            # Method 1: Try with the standard MIME type
+            try:
+                choice.add_attachment(
+                    type=MIME_TYPE,
+                    title=output_name,
+                    data=pptx_base64,
+                )
+                LOGGER.info("Attachment added successfully with standard MIME type")
+            except Exception as e:
+                LOGGER.error(f"Failed to add attachment with standard MIME type: {e}")
+                
+                # Method 2: Try with simpler MIME type
+                try:
+                    choice.add_attachment(
+                        type="application/octet-stream",
+                        title=output_name,
+                        data=pptx_base64,
+                    )
+                    LOGGER.info("Attachment added successfully with octet-stream MIME type")
+                except Exception as e2:
+                    LOGGER.error(f"Failed to add attachment with octet-stream MIME type: {e2}")
+                    
+                    # Method 3: Try without explicit type
+                    try:
+                        choice.add_attachment(
+                            title=output_name,
+                            data=pptx_base64,
+                        )
+                        LOGGER.info("Attachment added successfully without explicit type")
+                    except Exception as e3:
+                        LOGGER.error(f"Failed to add attachment without type: {e3}")
+                        raise HTTPException(status_code=500, message=f"Failed to create attachment: {e3}")
             
         LOGGER.info("=== CHAT COMPLETION SUCCESSFUL ===")
         LOGGER.info("Response created successfully with presentation attachment")
-        LOGGER.debug(f"Final attachment: type={MIME_TYPE}, title={output_name}, data_size={len(pptx_base64)}")
+        LOGGER.debug(f"Final attachment: title={output_name}, data_size={len(pptx_base64)}")
 
 
 def _resolve_output_name(payload: Dict[str, Any]) -> str:
@@ -178,4 +220,4 @@ app.add_chat_completion("json-to-pptx", PresentationApplication())
 
 LOGGER.info("Application initialized successfully")
 LOGGER.info("=== READY TO RECEIVE REQUESTS ===")
-LOGGER.info(f"Server will start on port 8000")
+LOGGER.info(f"Server will start on port 5000")
