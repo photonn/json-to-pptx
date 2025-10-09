@@ -17,7 +17,7 @@ from starlette.responses import Response as StarletteResponse, StreamingResponse
 import asyncio
 from typing import AsyncGenerator
 
-from .template_engine import TemplateEngine
+from .template_engine import TemplateEngine, encode_pptx
 
 # Configure logging based on environment variable
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -214,34 +214,34 @@ class PresentationApplication(ChatCompletion):
             
             # Option B: Upload to DIAL storage and attach by URL (makes it clickable/downloadable)
             try:
-                # The DIAL SDK will automatically handle file upload when we provide binary data
-                # and the app is configured with dial_url and propagate_auth_headers=True
-                
-                # Generate a unique filename for the presentation
                 import hashlib
                 file_hash = hashlib.sha256(pptx_bytes).hexdigest()[:16]
                 filename = f"{file_hash}_{output_name}"
-                
-                LOGGER.info(f"Creating attachment for file: {filename}")
-                LOGGER.info(f"File size: {len(pptx_bytes)} bytes")
-                
-                # Create attachment with base64 data - DIAL SDK will automatically:
-                # 1. Upload the data to DIAL file storage 
-                # 2. Replace the data with a URL
-                # 3. Make the attachment downloadable in the UI
-                import base64
-                pptx_base64 = base64.b64encode(pptx_bytes).decode('ascii')
-                
+
+                # 1) Convert PPTX to base64 (per example)
+                pptx_base64 = encode_pptx(pptx_bytes)
+                LOGGER.info(f"PPTX converted to base64, size: {len(pptx_base64)} chars")
+
+                # 2) Upload to DIAL storage (per example)
+                # Note: The DIAL SDK provides a response helper to upload files to storage.
+                # It returns a URL that is safe to show to the user.
+                file_url = response.upload_file(
+                    name=filename,
+                    data_base64=pptx_base64,
+                    content_type=MIME_TYPE,
+                )
+                LOGGER.info(f"Uploaded to DIAL storage. URL: {file_url}")
+
+                # 3) Present to the user as an attachment with URL (per example)
                 choice.add_attachment(
                     type=MIME_TYPE,
                     title=output_name,
-                    data=pptx_base64  # Base64 data will be automatically uploaded by DIAL SDK
+                    url=file_url
                 )
-                
-                LOGGER.info("PowerPoint attachment added - DIAL will handle upload and make it downloadable")
-                
+                LOGGER.info("PowerPoint attachment added with URL")
+
             except Exception as e:
-                LOGGER.error(f"Failed to create attachment: {e}")
+                LOGGER.error(f"Failed to upload/create attachment: {e}")
                 raise HTTPException(
                     status_code=500, 
                     message=f"Failed to create presentation attachment: {e}"
