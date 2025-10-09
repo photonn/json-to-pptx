@@ -32,9 +32,8 @@ LOGGER = logging.getLogger(__name__)
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 ENGINE = TemplateEngine(str(TEMPLATES_DIR))
 DEFAULT_OUTPUT_NAME = "presentation.pptx"
-MIME_TYPE = (
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-)
+# Use the standard PowerPoint MIME type - DIAL should recognize this for OneDrive integration
+MIME_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
@@ -119,17 +118,24 @@ class PresentationApplication(ChatCompletion):
         LOGGER.info(f"Base64 encoding complete, length: {len(pptx_base64)} characters")
 
         LOGGER.info("Creating response with attachment...")
+        LOGGER.info(f"Attachment details - MIME type: {MIME_TYPE}, Title: {output_name}, Data length: {len(pptx_base64)}")
+        
         with response.create_single_choice() as choice:
             choice.append_content(
                 f"Generated presentation '{output_name}' using template instructions."
             )
+            
+            LOGGER.info("Adding attachment to response...")
             choice.add_attachment(
                 type=MIME_TYPE,
                 title=output_name,
                 data=pptx_base64,
             )
+            LOGGER.info("Attachment added successfully")
+            
         LOGGER.info("=== CHAT COMPLETION SUCCESSFUL ===")
         LOGGER.info("Response created successfully with presentation attachment")
+        LOGGER.debug(f"Final attachment: type={MIME_TYPE}, title={output_name}, data_size={len(pptx_base64)}")
 
 
 def _resolve_output_name(payload: Dict[str, Any]) -> str:
@@ -137,6 +143,9 @@ def _resolve_output_name(payload: Dict[str, Any]) -> str:
     if isinstance(output, dict):
         name = output.get("file_name")
         if isinstance(name, str) and name.strip():
+            # Ensure the filename has the .pptx extension
+            if not name.lower().endswith('.pptx'):
+                name = name + '.pptx'
             return name
     return DEFAULT_OUTPUT_NAME
 
