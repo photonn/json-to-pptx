@@ -18,6 +18,7 @@ import asyncio
 from typing import AsyncGenerator
 
 from .template_engine import TemplateEngine, encode_pptx
+from .storage import upload_pptx_file
 
 # Configure logging based on environment variable
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -198,7 +199,7 @@ class PresentationApplication(ChatCompletion):
         except Exception as exc:  # pragma: no cover - converted to HTTP error
             LOGGER.exception("Failed to render presentation")
             raise HTTPException(status_code=500, message=str(exc)) from exc
-
+        
         LOGGER.info("Creating response with attachment...")
         
         # Create response following DIAL SDK pattern for Option B (upload to storage)
@@ -214,20 +215,22 @@ class PresentationApplication(ChatCompletion):
             
             # Option B: Upload to DIAL storage and attach by URL (makes it clickable/downloadable)
             try:
-                import hashlib
-                file_hash = hashlib.sha256(pptx_bytes).hexdigest()[:16]
-                filename = f"{file_hash}_{output_name}"
+                filename = output_name
 
                 # 1) Convert PPTX to base64 (per example)
                 pptx_base64 = encode_pptx(pptx_bytes)
                 LOGGER.info(f"PPTX converted to base64, size: {len(pptx_base64)} chars")
 
                 # 2) Upload to DIAL storage (per example)
-                # Note: The DIAL SDK provides a response helper to upload files to storage.
-                # It returns a URL that is safe to show to the user.
-                file_url = response.upload_file(
-                    name=filename,
-                    data_base64=pptx_base64,
+                # Follow the SDK example: require DIAL_URL and upload via REST
+                if DIAL_URL is None:
+                    raise ValueError("DIAL_URL environment variable is unset")
+
+                filepath = f"presentations/{filename}"
+                file_url = await upload_pptx_file(
+                    DIAL_URL,
+                    filepath,
+                    pptx_base64,
                     content_type=MIME_TYPE,
                 )
                 LOGGER.info(f"Uploaded to DIAL storage. URL: {file_url}")
