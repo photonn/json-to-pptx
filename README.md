@@ -13,8 +13,9 @@ placeholders inside `.pptx` files.
 - Accepts structured JSON describing slide updates and table data.
 - Replaces placeholder text in user-provided templates and fills named tables with
   dynamic content.
-- Returns the rendered PowerPoint file as a base64 attachment in the DIAL chat
+- Returns the rendered PowerPoint file as a downloadable attachment in the DIAL chat
   completion response.
+- **Option B Implementation**: Uploads files to DIAL storage and provides clickable download links.
 
 ## Project Layout
 
@@ -85,8 +86,9 @@ curl -X POST http://localhost:8000/openai/deployments/json-to-pptx/chat/completi
   -d @examples/sample_payload.json
 ```
 
-The response contains a single choice with the generated PowerPoint attached as
-base64 data under `choices[0].attachments[0].data`.
+The response contains a single choice with the generated PowerPoint as a downloadable
+attachment. When deployed with DIAL_URL configured, the attachment will have a `url` 
+field pointing to DIAL file storage, making it clickable in the UI.
 
 ```bash
 curl -X POST "http://localhost:8000/openai/deployments/json-to-pptx/chat/completions" \
@@ -109,6 +111,19 @@ docker run -p 8000:8000 json-to-pptx
 ```
 
 The container exposes the same API on port `8000`.
+
+### Deployment with DIAL (Option B - Recommended)
+
+For downloadable attachments, deploy with DIAL_URL configured:
+
+```bash
+docker run -p 8000:8000 -e DIAL_URL=https://your-dial-instance.com json-to-pptx
+```
+
+This enables:
+- Automatic file upload to DIAL storage
+- Clickable download links in the UI  
+- Integration with OneDrive/file systems
 
 ### Debugging and Logging
 

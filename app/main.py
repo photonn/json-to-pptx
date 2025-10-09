@@ -8,11 +8,6 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, Dict
-import hashlib
-import io
-import mimetypes
-import aiohttp
-from urllib.parse import urljoin
 
 from aidial_sdk import DIALApp, HTTPException
 from aidial_sdk.chat_completion import ChatCompletion, Request, Response
@@ -22,7 +17,7 @@ from starlette.responses import Response as StarletteResponse, StreamingResponse
 import asyncio
 from typing import AsyncGenerator
 
-from .template_engine import TemplateEngine, encode_pptx
+from .template_engine import TemplateEngine
 
 # Configure logging based on environment variable
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -42,76 +37,8 @@ DEFAULT_OUTPUT_NAME = "presentation.pptx"
 # Use the PowerPoint MIME type that works best with DIAL and OneDrive
 MIME_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
-# DIAL file storage configuration - following Vertex AI adapter pattern
+# DIAL file storage configuration
 DIAL_URL = os.getenv("DIAL_URL")
-
-
-class FileStorage:
-    """File storage client for uploading attachments to DIAL - based on Vertex AI adapter"""
-    
-    def __init__(self, dial_url: str, api_key: str):
-        self.dial_url = dial_url
-        self.api_key = api_key
-        self._bucket = None
-        
-    @property
-    def auth_headers(self):
-        return {"api-key": self.api_key}
-    
-    async def _get_bucket(self, session):
-        if self._bucket is None:
-            async with session.get(
-                f"{self.dial_url}/v1/bucket",
-                headers=self.auth_headers,
-            ) as response:
-                response.raise_for_status()
-                self._bucket = await response.json()
-                LOGGER.debug(f"Retrieved bucket: {self._bucket}")
-        return self._bucket
-    
-    @staticmethod
-    def _to_form_data(filename: str, content_type: str, content: bytes):
-        data = aiohttp.FormData()
-        data.add_field(
-            "file",
-            io.BytesIO(content),
-            filename=filename,
-            content_type=content_type,
-        )
-        return data
-    
-    async def upload(self, filename: str, content_type: str, content: bytes):
-        """Upload file and return metadata with URL - following Vertex AI adapter pattern"""
-        async with aiohttp.ClientSession() as session:
-            bucket = await self._get_bucket(session)
-            
-            appdata = bucket["appdata"]
-            ext = mimetypes.guess_extension(content_type) or ""
-            url = f"{self.dial_url}/v1/files/{appdata}/{filename}{ext}"
-            
-            data = self._to_form_data(filename, content_type, content)
-            
-            async with session.put(
-                url=url,
-                data=data,
-                headers=self.auth_headers,
-            ) as response:
-                response.raise_for_status()
-                meta = await response.json()
-                LOGGER.debug(f"Uploaded file: url={url}, metadata={meta}")
-                return meta
-
-
-def compute_hash_digest(data: bytes) -> str:
-    """Compute SHA256 hash of data - following Vertex AI adapter pattern"""
-    return hashlib.sha256(data).hexdigest()
-
-
-def create_file_storage(api_key: str):
-    """Create file storage client if DIAL_URL is available - following Vertex AI adapter pattern"""
-    if DIAL_URL is None:
-        return None
-    return FileStorage(dial_url=DIAL_URL, api_key=api_key)
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
@@ -272,17 +199,9 @@ class PresentationApplication(ChatCompletion):
             LOGGER.exception("Failed to render presentation")
             raise HTTPException(status_code=500, message=str(exc)) from exc
 
-        # Create file storage client if available - following Vertex AI adapter pattern
-        api_key = request.headers.get("api-key", "")
-        file_storage = create_file_storage(api_key) if api_key else None
-        
-        LOGGER.info("Encoding presentation to base64...")
-        pptx_base64 = encode_pptx(pptx_bytes)
-        LOGGER.info(f"Base64 encoding complete, length: {len(pptx_base64)} characters")
-
         LOGGER.info("Creating response with attachment...")
         
-        # Create response following the exact pattern from DIAL SDK examples
+        # Create response following DIAL SDK pattern for Option B (upload to storage)
         with response.create_single_choice() as choice:
             LOGGER.debug("Response choice created successfully")
             
@@ -291,48 +210,42 @@ class PresentationApplication(ChatCompletion):
             )
             LOGGER.debug("Content appended to choice")
             
-            # Create attachment following Vertex AI adapter pattern
-            LOGGER.info("Creating PowerPoint attachment...")
+            LOGGER.info("Adding PowerPoint attachment...")
             
-            # Start with base64 data attachment (like Imagen adapter does)
-            attachment_data = {
-                "type": MIME_TYPE,
-                "title": output_name,
-                "data": pptx_base64
-            }
-            
-            # If file storage is available, upload file and use URL instead
-            if file_storage is not None:
-                try:
-                    LOGGER.info("File storage available - uploading to DIAL storage...")
-                    filename = f"presentations/{compute_hash_digest(pptx_bytes)}"
-                    
-                    meta = await file_storage.upload(
-                        filename=filename,
-                        content_type=MIME_TYPE,
-                        content=pptx_bytes,
-                    )
-                    
-                    # Replace data with URL (following Imagen adapter pattern)
-                    attachment_data["data"] = None
-                    attachment_data["url"] = meta["url"]
-                    
-                    LOGGER.info(f"Successfully uploaded to file storage: {meta['url']}")
-                    
-                except Exception as e:
-                    LOGGER.warning(f"Failed to upload to file storage, falling back to base64: {e}")
-                    # Keep the base64 data as fallback
-            else:
-                LOGGER.info("No file storage available - using base64 data")
-            
-            LOGGER.info("Adding PowerPoint attachment to response...")
-            LOGGER.debug(f"Attachment parameters: {attachment_data}")
-            
-            # Add the PowerPoint file as an attachment
-            choice.add_attachment(**attachment_data)
-            
-            LOGGER.info("Attachment added successfully")
-            LOGGER.debug("Choice with attachment completed")
+            # Option B: Upload to DIAL storage and attach by URL (makes it clickable/downloadable)
+            try:
+                # The DIAL SDK will automatically handle file upload when we provide binary data
+                # and the app is configured with dial_url and propagate_auth_headers=True
+                
+                # Generate a unique filename for the presentation
+                import hashlib
+                file_hash = hashlib.sha256(pptx_bytes).hexdigest()[:16]
+                filename = f"{file_hash}_{output_name}"
+                
+                LOGGER.info(f"Creating attachment for file: {filename}")
+                LOGGER.info(f"File size: {len(pptx_bytes)} bytes")
+                
+                # Create attachment with base64 data - DIAL SDK will automatically:
+                # 1. Upload the data to DIAL file storage 
+                # 2. Replace the data with a URL
+                # 3. Make the attachment downloadable in the UI
+                import base64
+                pptx_base64 = base64.b64encode(pptx_bytes).decode('ascii')
+                
+                choice.add_attachment(
+                    type=MIME_TYPE,
+                    title=output_name,
+                    data=pptx_base64  # Base64 data will be automatically uploaded by DIAL SDK
+                )
+                
+                LOGGER.info("PowerPoint attachment added - DIAL will handle upload and make it downloadable")
+                
+            except Exception as e:
+                LOGGER.error(f"Failed to create attachment: {e}")
+                raise HTTPException(
+                    status_code=500, 
+                    message=f"Failed to create presentation attachment: {e}"
+                )
             
         LOGGER.info("=== CHAT COMPLETION SUCCESSFUL ===")
         LOGGER.info("Response created successfully with presentation attachment")
@@ -357,12 +270,7 @@ LOGGER.info(f"Log level set to: {LOG_LEVEL}")
 LOGGER.info(f"DIAL_URL configured: {'Yes' if DIAL_URL else 'No'}")
 LOGGER.info(f"Templates directory: {TEMPLATES_DIR}")
 
-# Check if aiohttp is available for file storage
-try:
-    import aiohttp
-    LOGGER.info("aiohttp available - file storage enabled")
-except ImportError:
-    LOGGER.warning("aiohttp not available - file storage disabled")
+# DIAL SDK will handle file storage automatically when configured
 
 # Create DIAL app with optional DIAL Core integration
 app = DIALApp(
