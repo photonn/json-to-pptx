@@ -110,6 +110,38 @@ docker run -p 8000:8000 json-to-pptx
 
 The container exposes the same API on port `8000`.
 
+### Debugging and Logging
+
+For troubleshooting deployment issues or to see detailed request logs, you can enable debug logging by setting the `LOG_LEVEL` environment variable:
+
+```bash
+# Enable DEBUG logging to see all incoming requests, headers, and processing steps
+docker run -p 8000:8000 -e LOG_LEVEL=DEBUG json-to-pptx
+
+# Or when deploying to DIAL
+# Set LOG_LEVEL=DEBUG in your deployment configuration
+```
+
+Available log levels:
+- `ERROR`: Only errors and exceptions
+- `WARN`: Warnings and above  
+- `INFO`: General information (default)
+- `DEBUG`: Detailed debugging information including:
+  - All incoming HTTP requests with headers and body
+  - Chat completion processing steps
+  - Template rendering progress
+  - Response creation details
+
+When `LOG_LEVEL=DEBUG` is set, the application will log:
+- Complete request details (method, URL, headers, body)
+- Client connection information
+- JSON payload parsing and validation
+- Template rendering progress
+- Response generation steps
+- Health check endpoint access
+
+This is especially useful when deployed to DIAL to diagnose connection issues or request processing problems.
+
 ## Extending the Template
 
 Add new placeholders to your template files or ship additional templates by

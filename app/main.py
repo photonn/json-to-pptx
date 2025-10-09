@@ -5,13 +5,27 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict
 
 from aidial_sdk import DIALApp, HTTPException
 from aidial_sdk.chat_completion import ChatCompletion, Request, Response
+from fastapi import Request as FastAPIRequest
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response as StarletteResponse
 
 from .template_engine import TemplateEngine, encode_pptx
+
+# Configure logging based on environment variable
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -23,20 +37,66 @@ MIME_TYPE = (
 )
 
 
+class LoggingMiddleware(BaseHTTPMiddleware):
+    """Middleware to log all incoming requests with full details."""
+    
+    async def dispatch(self, request: FastAPIRequest, call_next):
+        # Log incoming request details
+        LOGGER.info(f"=== INCOMING REQUEST ===")
+        LOGGER.info(f"Method: {request.method}")
+        LOGGER.info(f"URL: {request.url}")
+        LOGGER.info(f"Path: {request.url.path}")
+        LOGGER.info(f"Query params: {dict(request.query_params)}")
+        LOGGER.info(f"Headers: {dict(request.headers)}")
+        LOGGER.info(f"Client: {request.client}")
+        
+        # Try to log body for POST/PUT requests
+        if request.method in ["POST", "PUT", "PATCH"]:
+            try:
+                body = await request.body()
+                LOGGER.info(f"Body length: {len(body)} bytes")
+                if len(body) < 1000:  # Only log small bodies in full
+                    LOGGER.info(f"Body content: {body.decode('utf-8', errors='ignore')}")
+                else:
+                    LOGGER.info(f"Body content (first 500 chars): {body[:500].decode('utf-8', errors='ignore')}...")
+            except Exception as e:
+                LOGGER.error(f"Failed to read request body: {e}")
+        
+        # Process the request
+        try:
+            response = await call_next(request)
+            LOGGER.info(f"Response status: {response.status_code}")
+            LOGGER.info(f"=== REQUEST COMPLETED ===")
+            return response
+        except Exception as e:
+            LOGGER.error(f"Request failed with exception: {e}")
+            LOGGER.info(f"=== REQUEST FAILED ===")
+            raise
+
+
 class PresentationApplication(ChatCompletion):
     """Render a PowerPoint file from a JSON description."""
 
     async def chat_completion(self, request: Request, response: Response) -> None:
+        LOGGER.info("=== CHAT COMPLETION REQUEST ===")
+        LOGGER.info(f"Request messages count: {len(request.messages) if request.messages else 0}")
+        LOGGER.debug(f"Full request object: {request}")
+        
         if not request.messages:
+            LOGGER.error("Request is empty - no messages provided")
             raise HTTPException(status_code=422, message="The request is empty")
 
         message = request.messages[-1]
         content = message.text()
+        LOGGER.info(f"Processing message content length: {len(content)} characters")
+        LOGGER.debug(f"Message content: {content}")
 
         try:
             payload = json.loads(content)
             if not isinstance(payload, dict):
                 raise ValueError("Payload must be a JSON object")
+            LOGGER.info(f"Successfully parsed JSON payload with keys: {list(payload.keys())}")
+            LOGGER.debug(f"Full payload: {payload}")
         except (json.JSONDecodeError, ValueError) as exc:
             LOGGER.exception("Failed to parse request payload")
             raise HTTPException(
@@ -44,15 +104,21 @@ class PresentationApplication(ChatCompletion):
             ) from exc
 
         output_name = _resolve_output_name(payload)
+        LOGGER.info(f"Output filename: {output_name}")
 
         try:
+            LOGGER.info("Starting presentation rendering...")
             pptx_bytes = ENGINE.render(payload)
+            LOGGER.info(f"Successfully rendered presentation, size: {len(pptx_bytes)} bytes")
         except Exception as exc:  # pragma: no cover - converted to HTTP error
             LOGGER.exception("Failed to render presentation")
             raise HTTPException(status_code=500, message=str(exc)) from exc
 
+        LOGGER.info("Encoding presentation to base64...")
         pptx_base64 = encode_pptx(pptx_bytes)
+        LOGGER.info(f"Base64 encoding complete, length: {len(pptx_base64)} characters")
 
+        LOGGER.info("Creating response with attachment...")
         with response.create_single_choice() as choice:
             choice.append_content(
                 f"Generated presentation '{output_name}' using template instructions."
@@ -62,6 +128,8 @@ class PresentationApplication(ChatCompletion):
                 title=output_name,
                 data=pptx_base64,
             )
+        LOGGER.info("=== CHAT COMPLETION SUCCESSFUL ===")
+        LOGGER.info("Response created successfully with presentation attachment")
 
 
 def _resolve_output_name(payload: Dict[str, Any]) -> str:
@@ -76,10 +144,29 @@ def _resolve_output_name(payload: Dict[str, Any]) -> str:
 # Configuration for DIAL Core integration
 DIAL_URL = os.getenv("DIAL_URL")
 
+LOGGER.info("=== APPLICATION STARTUP ===")
+LOGGER.info(f"Log level set to: {LOG_LEVEL}")
+LOGGER.info(f"DIAL_URL configured: {'Yes' if DIAL_URL else 'No'}")
+LOGGER.info(f"Templates directory: {TEMPLATES_DIR}")
+
 # Create DIAL app with optional DIAL Core integration
 app = DIALApp(
     dial_url=DIAL_URL,
     propagate_auth_headers=bool(DIAL_URL),  # Only enable if DIAL_URL is set
     add_healthcheck=True
 )
+
+# Add logging middleware to capture all HTTP requests
+app.add_middleware(LoggingMiddleware)
+
+# Add health check logging
+@app.get("/health")
+async def health_check():
+    LOGGER.info("Health check endpoint accessed")
+    return {"status": "healthy", "service": "json-to-pptx"}
+
 app.add_chat_completion("json-to-pptx", PresentationApplication())
+
+LOGGER.info("Application initialized successfully")
+LOGGER.info("=== READY TO RECEIVE REQUESTS ===")
+LOGGER.info(f"Server will start on port 8000")
