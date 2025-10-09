@@ -32,12 +32,8 @@ LOGGER = logging.getLogger(__name__)
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 ENGINE = TemplateEngine(str(TEMPLATES_DIR))
 DEFAULT_OUTPUT_NAME = "presentation.pptx"
-# Use the standard PowerPoint MIME type - DIAL should recognize this for OneDrive integration
+# Use the PowerPoint MIME type that works best with DIAL and OneDrive
 MIME_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-
-MIME_TYPE_PRIMARY = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-MIME_TYPE_FALLBACK = "application/vnd.ms-powerpoint"
-MIME_TYPE_GENERIC = "application/octet-stream"
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
@@ -132,52 +128,27 @@ class PresentationApplication(ChatCompletion):
         LOGGER.info(f"Base64 encoding complete, length: {len(pptx_base64)} characters")
 
         LOGGER.info("Creating response with attachment...")
-        LOGGER.info(f"Attachment details - MIME type: {MIME_TYPE}, Title: {output_name}, Data length: {len(pptx_base64)}")
+        LOGGER.info(f"Attachment details - Title: {output_name}, Data length: {len(pptx_base64)} characters")
         
-        # Try different approaches for attachment based on DIAL documentation
+        # Create response following the exact pattern from DIAL SDK examples
         with response.create_single_choice() as choice:
             choice.append_content(
                 f"Generated presentation '{output_name}' using template instructions."
             )
             
-            LOGGER.info("Adding attachment to response...")
+            LOGGER.info("Adding PowerPoint attachment to response...")
             
-            # Method 1: Try with the standard MIME type
-            try:
-                choice.add_attachment(
-                    type=MIME_TYPE,
-                    title=output_name,
-                    data=pptx_base64,
-                )
-                LOGGER.info("Attachment added successfully with standard MIME type")
-            except Exception as e:
-                LOGGER.error(f"Failed to add attachment with standard MIME type: {e}")
-                
-                # Method 2: Try with simpler MIME type
-                try:
-                    choice.add_attachment(
-                        type="application/octet-stream",
-                        title=output_name,
-                        data=pptx_base64,
-                    )
-                    LOGGER.info("Attachment added successfully with octet-stream MIME type")
-                except Exception as e2:
-                    LOGGER.error(f"Failed to add attachment with octet-stream MIME type: {e2}")
-                    
-                    # Method 3: Try without explicit type
-                    try:
-                        choice.add_attachment(
-                            title=output_name,
-                            data=pptx_base64,
-                        )
-                        LOGGER.info("Attachment added successfully without explicit type")
-                    except Exception as e3:
-                        LOGGER.error(f"Failed to add attachment without type: {e3}")
-                        raise HTTPException(status_code=500, message=f"Failed to create attachment: {e3}")
+            # Add the PowerPoint file as an attachment - following render_text example pattern
+            choice.add_attachment(
+                type=MIME_TYPE,
+                title=output_name,
+                data=pptx_base64
+            )
+            
+            LOGGER.info("Attachment added successfully")
             
         LOGGER.info("=== CHAT COMPLETION SUCCESSFUL ===")
         LOGGER.info("Response created successfully with presentation attachment")
-        LOGGER.debug(f"Final attachment: title={output_name}, data_size={len(pptx_base64)}")
 
 
 def _resolve_output_name(payload: Dict[str, Any]) -> str:
