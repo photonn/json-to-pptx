@@ -8,6 +8,11 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, Dict
+import hashlib
+import io
+import mimetypes
+import aiohttp
+from urllib.parse import urljoin
 
 from aidial_sdk import DIALApp, HTTPException
 from aidial_sdk.chat_completion import ChatCompletion, Request, Response
@@ -36,6 +41,77 @@ ENGINE = TemplateEngine(str(TEMPLATES_DIR))
 DEFAULT_OUTPUT_NAME = "presentation.pptx"
 # Use the PowerPoint MIME type that works best with DIAL and OneDrive
 MIME_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+# DIAL file storage configuration - following Vertex AI adapter pattern
+DIAL_URL = os.getenv("DIAL_URL")
+
+
+class FileStorage:
+    """File storage client for uploading attachments to DIAL - based on Vertex AI adapter"""
+    
+    def __init__(self, dial_url: str, api_key: str):
+        self.dial_url = dial_url
+        self.api_key = api_key
+        self._bucket = None
+        
+    @property
+    def auth_headers(self):
+        return {"api-key": self.api_key}
+    
+    async def _get_bucket(self, session):
+        if self._bucket is None:
+            async with session.get(
+                f"{self.dial_url}/v1/bucket",
+                headers=self.auth_headers,
+            ) as response:
+                response.raise_for_status()
+                self._bucket = await response.json()
+                LOGGER.debug(f"Retrieved bucket: {self._bucket}")
+        return self._bucket
+    
+    @staticmethod
+    def _to_form_data(filename: str, content_type: str, content: bytes):
+        data = aiohttp.FormData()
+        data.add_field(
+            "file",
+            io.BytesIO(content),
+            filename=filename,
+            content_type=content_type,
+        )
+        return data
+    
+    async def upload(self, filename: str, content_type: str, content: bytes):
+        """Upload file and return metadata with URL - following Vertex AI adapter pattern"""
+        async with aiohttp.ClientSession() as session:
+            bucket = await self._get_bucket(session)
+            
+            appdata = bucket["appdata"]
+            ext = mimetypes.guess_extension(content_type) or ""
+            url = f"{self.dial_url}/v1/files/{appdata}/{filename}{ext}"
+            
+            data = self._to_form_data(filename, content_type, content)
+            
+            async with session.put(
+                url=url,
+                data=data,
+                headers=self.auth_headers,
+            ) as response:
+                response.raise_for_status()
+                meta = await response.json()
+                LOGGER.debug(f"Uploaded file: url={url}, metadata={meta}")
+                return meta
+
+
+def compute_hash_digest(data: bytes) -> str:
+    """Compute SHA256 hash of data - following Vertex AI adapter pattern"""
+    return hashlib.sha256(data).hexdigest()
+
+
+def create_file_storage(api_key: str):
+    """Create file storage client if DIAL_URL is available - following Vertex AI adapter pattern"""
+    if DIAL_URL is None:
+        return None
+    return FileStorage(dial_url=DIAL_URL, api_key=api_key)
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
@@ -152,6 +228,12 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
 class PresentationApplication(ChatCompletion):
     """Render a PowerPoint file from a JSON description."""
+    
+    def __init__(self):
+        """Initialize with file storage support"""
+        super().__init__()
+        # Get API key from DIAL request headers - will be set per request
+        self.file_storage = None
 
     async def chat_completion(self, request: Request, response: Response) -> None:
         LOGGER.info("=== CHAT COMPLETION REQUEST ===")
@@ -190,13 +272,15 @@ class PresentationApplication(ChatCompletion):
             LOGGER.exception("Failed to render presentation")
             raise HTTPException(status_code=500, message=str(exc)) from exc
 
+        # Create file storage client if available - following Vertex AI adapter pattern
+        api_key = request.headers.get("api-key", "")
+        file_storage = create_file_storage(api_key) if api_key else None
+        
         LOGGER.info("Encoding presentation to base64...")
         pptx_base64 = encode_pptx(pptx_bytes)
         LOGGER.info(f"Base64 encoding complete, length: {len(pptx_base64)} characters")
 
         LOGGER.info("Creating response with attachment...")
-        LOGGER.info(f"Attachment details - Title: {output_name}, Data length: {len(pptx_base64)} characters")
-        LOGGER.debug(f"Base64 data sample (first 100 chars): {pptx_base64[:100]}")
         
         # Create response following the exact pattern from DIAL SDK examples
         with response.create_single_choice() as choice:
@@ -207,15 +291,45 @@ class PresentationApplication(ChatCompletion):
             )
             LOGGER.debug("Content appended to choice")
             
-            LOGGER.info("Adding PowerPoint attachment to response...")
-            LOGGER.debug(f"Attachment parameters: type='{MIME_TYPE}', title='{output_name}', data_length={len(pptx_base64)}")
+            # Create attachment following Vertex AI adapter pattern
+            LOGGER.info("Creating PowerPoint attachment...")
             
-            # Add the PowerPoint file as an attachment - following render_text example pattern
-            choice.add_attachment(
-                type=MIME_TYPE,
-                title=output_name,
-                data=pptx_base64
-            )
+            # Start with base64 data attachment (like Imagen adapter does)
+            attachment_data = {
+                "type": MIME_TYPE,
+                "title": output_name,
+                "data": pptx_base64
+            }
+            
+            # If file storage is available, upload file and use URL instead
+            if file_storage is not None:
+                try:
+                    LOGGER.info("File storage available - uploading to DIAL storage...")
+                    filename = f"presentations/{compute_hash_digest(pptx_bytes)}"
+                    
+                    meta = await file_storage.upload(
+                        filename=filename,
+                        content_type=MIME_TYPE,
+                        content=pptx_bytes,
+                    )
+                    
+                    # Replace data with URL (following Imagen adapter pattern)
+                    attachment_data["data"] = None
+                    attachment_data["url"] = meta["url"]
+                    
+                    LOGGER.info(f"Successfully uploaded to file storage: {meta['url']}")
+                    
+                except Exception as e:
+                    LOGGER.warning(f"Failed to upload to file storage, falling back to base64: {e}")
+                    # Keep the base64 data as fallback
+            else:
+                LOGGER.info("No file storage available - using base64 data")
+            
+            LOGGER.info("Adding PowerPoint attachment to response...")
+            LOGGER.debug(f"Attachment parameters: {attachment_data}")
+            
+            # Add the PowerPoint file as an attachment
+            choice.add_attachment(**attachment_data)
             
             LOGGER.info("Attachment added successfully")
             LOGGER.debug("Choice with attachment completed")
@@ -238,12 +352,17 @@ def _resolve_output_name(payload: Dict[str, Any]) -> str:
 
 
 # Configuration for DIAL Core integration
-DIAL_URL = os.getenv("DIAL_URL")
-
 LOGGER.info("=== APPLICATION STARTUP ===")
 LOGGER.info(f"Log level set to: {LOG_LEVEL}")
 LOGGER.info(f"DIAL_URL configured: {'Yes' if DIAL_URL else 'No'}")
 LOGGER.info(f"Templates directory: {TEMPLATES_DIR}")
+
+# Check if aiohttp is available for file storage
+try:
+    import aiohttp
+    LOGGER.info("aiohttp available - file storage enabled")
+except ImportError:
+    LOGGER.warning("aiohttp not available - file storage disabled")
 
 # Create DIAL app with optional DIAL Core integration
 app = DIALApp(
